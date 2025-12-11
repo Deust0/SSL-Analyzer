@@ -1,746 +1,786 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-testssl.sh HTML Report Analyzer v2.2 - Final Optimizado
-Análisis de vulnerabilidades SSL/TLS desde reportes HTML
-Detección de protocolos vulnerables, TLS_FALLBACK y tabla responsive
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║              TESTSSL.SH HTML REPORT ANALYZER v2.1 - VERSIÓN FINAL             ║
+║                    Generador Avanzado de Tablas de Resumen                    ║
+║                                                                               ║
+║  VERSIÓN 2.1 - FINAL CON LÓGICA CONFIRMADA:                                  ║
+║  - Protocolos vulnerables (SSLv2, SSLv3, TLSv1, TLSv1.1):                    ║
+║    ❌ X ROJO si "offered" (habilitados = inseguro)                           ║
+║    ✓ OK VERDE si "not offered" (deshabilitados = seguro)                    ║
+║                                                                               ║
+║  - Protocolos seguros (TLSv1.2, TLSv1.3):                                    ║
+║    ✓ OK VERDE si "offered" (habilitados = seguro)                           ║
+║    ❌ X ROJO si "not offered" (no disponibles = problema)                    ║
+║                                                                               ║
+║  Uso:                                                                        ║
+║  python3 testssl_analyzer.py [directorio_con_htmls]                        ║
+║  python3 testssl_analyzer.py . --csv --json                                ║
+║                                                                               ║
+║  Python: 3.6+                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
 """
 
-import os
-import json
-import csv
-import sys
 import re
+import os
+import sys
+import json
+import argparse
 from pathlib import Path
-from html import escape
+from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass, asdict
 from datetime import datetime
 
-class TestSSLAnalyzer:
-    """Analizador de reportes HTML de testssl.sh con detección de vulnerabilidades"""
+# ============================================================================
+# CLASES Y ESTRUCTURAS DE DATOS
+# ============================================================================
+
+@dataclass
+class SecurityScan:
+    """Almacena resultados de un escaneo de seguridad SSL/TLS"""
+    ip: str
+    puerto: str
+    protocolos: Dict[str, bool]  # True = vulnerable, False = OK
+    vulnerabilidades: Dict[str, bool]  # True = vulnerable, False = OK
+    archivo_origen: str = ""
     
-    def __init__(self):
-        self.results = []
-        self.vulnerable_protocols = ['SSLv2', 'SSLv3', 'TLS 1', 'TLS 1.1']
-        self.secure_protocols = ['TLS 1.2', 'TLS 1.3']
+    def to_dict(self):
+        """Convierte el objeto a diccionario"""
+        return {
+            'ip': self.ip,
+            'puerto': self.puerto,
+            'protocolos': self.protocolos,
+            'vulnerabilidades': self.vulnerabilidades,
+            'archivo_origen': self.archivo_origen
+        }
+
+
+class TestSSLParser:
+    """
+    Parser v2.1 para archivos HTML de testssl.sh
+    Extrae información de protocolos y vulnerabilidades con lógica comprobada
+    """
+    
+    def __init__(self, file_path: str):
+        """Inicializa el parser con un archivo HTML"""
+        self.file_path = file_path
+        self.filename = os.path.basename(file_path)
         
-    def extract_ip_port(self, filename):
-        """Extrae IP y puerto del nombre del archivo"""
-        match = re.search(r'(\d+\.\d+\.\d+\.\d+)_p(\d+)', filename)
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            self.content = f.read()
+        
+        self.ip = self._extract_ip()
+        self.puerto = self._extract_puerto()
+    
+    def _extract_ip(self) -> str:
+        """Extrae la IP del archivo"""
+        match = re.search(r'(\d+\.\d+\.\d+\.\d+)_p\d+', self.filename)
         if match:
-            return f"{match.group(1)}:{match.group(2)}"
+            return match.group(1)
         return "Unknown"
     
-    def extract_protocols(self, content):
-        """Extrae información de protocolos del contenido HTML"""
-        protocols = {}
+    def _extract_puerto(self) -> str:
+        """Extrae el puerto del archivo"""
+        match = re.search(r'_p(\d+)', self.filename)
+        if match:
+            return match.group(1)
+        return "Unknown"
+    
+    def parse_protocols(self) -> Dict[str, bool]:
+        """
+        VERSIÓN 2.1 FINAL - Extrae información de protocolos TLS/SSL
         
-        protocol_patterns = {
-            'SSLv2': r'SSLv2\s*</span>.*?<span[^>]*>(.*?)</span>',
-            'SSLv3': r'SSLv3\s*</span>.*?<span[^>]*>(.*?)</span>',
-            'TLS 1.0': r'TLS 1\s*</span>.*?<span[^>]*>(.*?)</span>',
-            'TLS 1.1': r'TLS 1\.1\s*</span>.*?<span[^>]*>(.*?)</span>',
-            'TLS 1.2': r'TLS 1\.2\s*</span>.*?<span[^>]*>(.*?)</span>',
-            'TLS 1.3': r'TLS 1\.3\s*</span>.*?<span[^>]*>(.*?)</span>',
+        LÓGICA COMPROBADA Y CONFIRMADA:
+        
+        PROTOCOLOS VULNERABLES (SSLv2, SSLv3, TLSv1, TLSv1.1):
+        - ❌ X ROJO   ← si "offered" (habilitados = inseguro)
+        - ✓ OK VERDE  ← si "not offered" (deshabilitados = seguro)
+        
+        PROTOCOLOS SEGUROS (TLSv1.2, TLSv1.3):
+        - ✓ OK VERDE  ← si "offered" (habilitados = seguro)
+        - ❌ X ROJO   ← si "not offered" (no disponibles = problema)
+        
+        Retorna: {protocolo: es_vulnerable}
+        """
+        protocolos = {
+            'SSLv2': False,
+            'SSLv3': False,
+            'TLSv1': False,
+            'TLSv1.1': False,
+            'TLSv1.2': False,
+            'TLSv1.3': False
         }
         
-        for protocol, pattern in protocol_patterns.items():
-            match = re.search(pattern, content)
-            if match:
-                status = match.group(1).strip().lower()
-                protocols[protocol] = status
+        # Buscar la sección "Testing protocols"
+        proto_section = re.search(
+            r'Testing protocols.*?(?=Testing cipher|Testing server)',
+            self.content,
+            re.DOTALL | re.IGNORECASE
+        )
         
-        return protocols
-    
-    def extract_tls_fallback(self, content):
-        """Extrae información de TLS_FALLBACK SCSV"""
-        patterns = [
-            r'TLS FALLBACK.*?SCSV.*?</span>.*?<span[^>]*>(.*?)</span>',
-            r'TLS FALLBACK SCSV.*?<span[^>]*>(.*?)</span>',
-        ]
+        if not proto_section:
+            return protocolos
         
-        for pattern in patterns:
-            match = re.search(pattern, content, re.IGNORECASE | re.DOTALL)
+        section = proto_section.group(0)
+        
+        # PATRONES v2.1: Buscar hasta fin de línea para evitar ambigüedades
+        patterns = {
+            'SSLv2': r'SSLv2\s*</span>([^\n]*)',
+            'SSLv3': r'SSLv3\s*</span>([^\n]*)',
+            'TLSv1': r'(?:TLS 1|TLSv1)(?:\.0)?\s+</span>([^\n]*)',
+            'TLSv1.1': r'(?:TLS 1\.1|TLSv1\.1)\s+</span>([^\n]*)',
+            'TLSv1.2': r'(?:TLS 1\.2|TLSv1\.2)\s+</span>([^\n]*)',
+            'TLSv1.3': r'(?:TLS 1\.3|TLSv1\.3)\s+</span>([^\n]*)'
+        }
+        
+        for proto, pattern in patterns.items():
+            match = re.search(pattern, section, re.IGNORECASE)
+            
             if match:
-                status = match.group(1).strip().lower()
+                captura = match.group(1).strip().lower()
                 
-                # Normalizar los posibles valores
-                if 'downgrade attack prevention' in status or 'supported' in status:
-                    return 'supported'  # ✓ OK VERDE
-                elif 'no fallback' in status:
-                    return 'safe'  # ✓ OK VERDE (no fallback posible)
-                elif 'not supported' in status or 'vulnerable' in status:
-                    return 'vulnerable'  # ❌ X ROJO
+                # Detectar palabras clave en la MISMA línea
+                tiene_offered = 'offered' in captura
+                tiene_not_offered = 'not offered' in captura
+                
+                # LÓGICA v2.1 - COMPROBADA Y CONFIRMADA
+                if proto in ['SSLv2', 'SSLv3', 'TLSv1', 'TLSv1.1']:
+                    # PROTOCOLOS VULNERABLES:
+                    # ❌ X ROJO si "offered" (habilitado = inseguro)
+                    # ✓ OK VERDE si "not offered" (deshabilitado = seguro)
+                    protocolos[proto] = tiene_offered and not tiene_not_offered
+                else:
+                    # PROTOCOLOS SEGUROS (TLSv1.2, TLSv1.3):
+                    # ✓ OK VERDE si "offered" (habilitado = seguro)
+                    # ❌ X ROJO si "not offered" (no disponible = problema)
+                    protocolos[proto] = tiene_not_offered
         
-        return None
+        return protocolos
     
-    def evaluate_protocol(self, protocol, status):
-        """Evalúa un protocolo y retorna (símbolo, color)"""
-        if not status:
-            return ('?', 'gray')
-        
-        status = status.lower()
-        
-        # Protocolos vulnerables
-        if protocol in self.vulnerable_protocols:
-            if 'offered' in status:
-                return ('❌', 'red')  # X ROJO - vulnerable y habilitado
-            elif 'not offered' in status:
-                return ('✓', 'green')  # OK VERDE - vulnerable pero deshabilitado
-        
-        # Protocolos seguros
-        elif protocol in self.secure_protocols:
-            if 'offered' in status:
-                return ('✓', 'green')  # OK VERDE - seguro y habilitado
-            elif 'not offered' in status:
-                return ('❌', 'red')  # X ROJO - seguro pero no disponible
-        
-        return ('?', 'gray')
-    
-    def evaluate_tls_fallback(self, status):
-        """Evalúa TLS_FALLBACK SCSV"""
-        if not status:
-            return ('?', 'gray', 'N/A')
-        
-        status = status.lower()
-        if 'supported' in status or 'safe' in status:
-            return ('✓', 'green', 'Supported')
-        elif 'vulnerable' in status or 'not supported' in status:
-            return ('❌', 'red', 'Vulnerable')
-        
-        return ('?', 'gray', 'Unknown')
-    
-    def process_file(self, filepath):
-        """Procesa un archivo HTML de testssl.sh"""
-        try:
-            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-        except Exception as e:
-            print(f"Error leyendo {filepath}: {e}")
-            return None
-        
-        ip_port = self.extract_ip_port(filepath)
-        protocols = self.extract_protocols(content)
-        tls_fallback = self.extract_tls_fallback(content)
-        
-        result = {
-            'ip_port': ip_port,
-            'protocols': {},
-            'tls_fallback': tls_fallback,
-            'filename': os.path.basename(filepath)
+    def parse_vulnerabilities(self) -> Dict[str, bool]:
+        """
+        Extrae información de vulnerabilidades conocidas.
+        Retorna: {vulnerabilidad: es_vulnerable}
+        """
+        vulnerabilidades = {
+            'Heartbleed': False,
+            'CCS': False,
+            'Ticketbleed': False,
+            'Opossum': False,
+            'ROBOT': False,
+            'Secure Renegotiation': False,
+            'Client-Init Renegotiation': False,
+            'CRIME': False,
+            'BREACH': False,
+            'POODLE': False,
+            'TLS Fallback': False,
+            'SWEET32': False,
+            'FREAK': False,
+            'DROWN': False,
+            'LOGJAM': False,
+            'BEAST': False,
+            'LUCKY13': False,
+            'Winshock': False,
+            'RC4': False
         }
         
-        for protocol, status in protocols.items():
-            symbol, color = self.evaluate_protocol(protocol, status)
-            result['protocols'][protocol] = {
-                'status': status,
-                'symbol': symbol,
-                'color': color
-            }
+        vuln_section = re.search(
+            r'Testing vulnerabilities.*?(?=Running client|$)',
+            self.content,
+            re.DOTALL | re.IGNORECASE
+        )
         
-        return result
+        if not vuln_section:
+            return vulnerabilidades
+        
+        section = vuln_section.group(0)
+        
+        patterns = {
+            'Heartbleed': r'Heartbleed.*?(?:VULNERABLE|not vulnerable)',
+            'CCS': r'CCS.*?(?:VULNERABLE|not vulnerable)',
+            'Ticketbleed': r'Ticketbleed.*?(?:VULNERABLE|not vulnerable)',
+            'Opossum': r'Opossum.*?(?:VULNERABLE|not vulnerable)',
+            'ROBOT': r'ROBOT.*?(?:VULNERABLE|not vulnerable|does not support)',
+            'Secure Renegotiation': r'Secure Renegotiation.*?(?:supported|NOT)',
+            'Client-Init Renegotiation': r'Client-Initiated.*?(?:VULNERABLE|not vulnerable)',
+            'CRIME': r'CRIME.*?(?:VULNERABLE|not vulnerable)',
+            'BREACH': r'BREACH.*?(?:VULNERABLE|no gzip|HTTP compression)',
+            'POODLE': r'POODLE.*?(?:VULNERABLE|not vulnerable)',
+            'TLS Fallback': r'FALLBACK.*?(?:supported|not|prevention)',
+            'SWEET32': r'SWEET32.*?(?:VULNERABLE|not vulnerable)',
+            'FREAK': r'FREAK.*?(?:VULNERABLE|not vulnerable)',
+            'DROWN': r'DROWN.*?(?:VULNERABLE|not vulnerable)',
+            'LOGJAM': r'LOGJAM.*?(?:VULNERABLE|not vulnerable|no DH)',
+            'BEAST': r'BEAST.*?(?:VULNERABLE|not vulnerable)',
+            'LUCKY13': r'LUCKY13.*?(?:VULNERABLE|not vulnerable)',
+            'Winshock': r'Winshock.*?(?:VULNERABLE|not vulnerable)',
+            'RC4': r'RC4.*?(?:detected|no RC4)'
+        }
+        
+        for vuln, pattern in patterns.items():
+            match = re.search(pattern, section, re.IGNORECASE | re.DOTALL)
+            
+            if match:
+                text = match.group(0).lower()
+                if 'vulnerable' in text and 'not vulnerable' not in text:
+                    vulnerabilidades[vuln] = True
+                elif 'detected' in text and 'no rc4' not in text:
+                    vulnerabilidades[vuln] = True
+                else:
+                    vulnerabilidades[vuln] = False
+        
+        return vulnerabilidades
     
-    def analyze_directory(self, directory):
-        """Analiza todos los archivos HTML en un directorio"""
-        html_files = list(Path(directory).glob('*.html'))
-        
-        if not html_files:
-            print(f"⚠️  No se encontraron archivos HTML en {directory}")
-            return []
-        
-        print(f"📂 Directorio: {directory}")
-        print(f"📄 Archivos encontrados: {len(html_files)}\n")
-        
-        for html_file in sorted(html_files):
-            print(f"⏳ Procesando: {html_file.name}...")
-            result = self.process_file(str(html_file))
-            if result:
-                self.results.append(result)
-                print(f"  ✓ IP: {result['ip_port']}")
-        
-        print(f"\n✓ Se procesaron {len(self.results)} archivo(s)\n")
-        return self.results
+    def get_result(self) -> SecurityScan:
+        """Retorna el resultado completo del parseo"""
+        return SecurityScan(
+            ip=self.ip,
+            puerto=self.puerto,
+            protocolos=self.parse_protocols(),
+            vulnerabilidades=self.parse_vulnerabilities(),
+            archivo_origen=self.filename
+        )
+
+
+# ============================================================================
+# GENERADORES DE REPORTES
+# ============================================================================
+
+class HTMLReportGenerator:
+    """Genera reportes HTML profesionales con colores explícitos"""
     
-    def generate_html_report(self, output_file='reporte_ssl_vulnerabilidades.html'):
-        """Genera un reporte HTML profesional con tablas divididas"""
+    @staticmethod
+    def generate(datos: List[SecurityScan], output_file: str = "reporte_ssl_vulnerabilidades.html"):
+        """Genera un reporte HTML con tabla visual mejorada"""
         
-        html_content = f"""<!DOCTYPE html>
+        todos_protocolos = set()
+        todas_vulns = set()
+        
+        for escan in datos:
+            todos_protocolos.update(escan.protocolos.keys())
+            todas_vulns.update(escan.vulnerabilidades.keys())
+        
+        todos_protocolos = sorted(list(todos_protocolos))
+        todas_vulns = sorted(list(todas_vulns))
+        
+        html = """<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reporte SSL/TLS - Análisis de Vulnerabilidades v2.2</title>
+    <title>Reporte de Vulnerabilidades SSL/TLS - testssl.sh</title>
     <style>
-        * {{
+        * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-        }}
+        }
         
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Ubuntu', sans-serif;
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            color: #333;
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             padding: 20px;
             min-height: 100vh;
-        }}
+        }
         
-        .container {{
+        .container {
             max-width: 1400px;
             margin: 0 auto;
             background: white;
             border-radius: 12px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            overflow: hidden;
-        }}
+            padding: 30px;
+        }
         
-        .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 40px;
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
             text-align: center;
-        }}
+            font-size: 2.5em;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
         
-        .header h1 {{
-            font-size: 32px;
-            margin-bottom: 10px;
-            font-weight: 700;
-        }}
-        
-        .header p {{
-            font-size: 16px;
-            opacity: 0.95;
-            margin-bottom: 5px;
-        }}
-        
-        .header .version {{
-            display: inline-block;
-            background: rgba(255,255,255,0.2);
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 13px;
-            margin-top: 15px;
-            font-weight: 500;
-        }}
-        
-        .content {{
-            padding: 40px;
-        }}
-        
-        .summary {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-bottom: 40px;
-        }}
-        
-        .summary-card {{
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            padding: 20px;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-        }}
-        
-        .summary-card h3 {{
-            font-size: 13px;
+        .subtitle {
+            text-align: center;
             color: #666;
-            text-transform: uppercase;
-            margin-bottom: 10px;
-            font-weight: 600;
-            letter-spacing: 1px;
-        }}
-        
-        .summary-card .value {{
-            font-size: 32px;
-            font-weight: 700;
-            color: #333;
-        }}
-        
-        .legend {{
-            background: #f9f9f9;
-            padding: 20px;
-            border-radius: 8px;
             margin-bottom: 30px;
-            border: 1px solid #e0e0e0;
-        }}
+            font-size: 1.1em;
+        }
         
-        .legend h3 {{
-            margin-bottom: 15px;
-            font-size: 16px;
-            color: #333;
-        }}
-        
-        .legend-items {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-        }}
-        
-        .legend-item {{
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }}
-        
-        .legend-box {{
-            width: 60px;
-            height: 40px;
-            border-radius: 6px;
-            border: 2px solid;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            flex-shrink: 0;
-        }}
-        
-        .legend-box.green {{
-            background: #d4edda;
-            border-color: #28a745;
-            color: #155724;
-        }}
-        
-        .legend-box.red {{
-            background: #f8d7da;
-            border-color: #dc3545;
-            color: #721c24;
-        }}
-        
-        .legend-text {{
-            font-size: 13px;
-            color: #555;
-        }}
-        
-        .section-title {{
-            font-size: 18px;
-            font-weight: 700;
+        .section-title {
+            font-size: 1.5em;
             color: #333;
             margin-top: 40px;
             margin-bottom: 20px;
             padding-bottom: 10px;
-            border-bottom: 2px solid #667eea;
-        }}
+            border-bottom: 3px solid #667eea;
+        }
         
-        .tables-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }}
-        
-        .table-wrapper {{
-            background: white;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-            border: 1px solid #e0e0e0;
-        }}
-        
-        .table-title {{
-            background: #f5f7fa;
-            padding: 15px;
-            font-weight: 600;
-            color: #333;
-            border-bottom: 2px solid #e0e0e0;
-            font-size: 14px;
-        }}
-        
-        table {{
+        table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 14px;
-        }}
+            margin-bottom: 30px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
         
-        thead {{
-            background: #f9f9f9;
-        }}
+        thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-weight: bold;
+            position: sticky;
+            top: 0;
+        }
         
-        th {{
-            padding: 12px;
+        th {
+            padding: 18px;
             text-align: left;
-            font-weight: 600;
-            color: #555;
-            border-bottom: 2px solid #e0e0e0;
-            font-size: 13px;
-        }}
+            font-size: 0.95em;
+        }
         
-        td {{
-            padding: 12px;
+        td {
+            padding: 14px 18px;
             border-bottom: 1px solid #e0e0e0;
-        }}
+            font-size: 0.95em;
+        }
         
-        tr:hover {{
-            background: #f5f5f5;
-        }}
+        tbody tr:hover {
+            background-color: #f5f5f5;
+            transition: background-color 0.2s ease;
+        }
         
-        .ip-cell {{
-            font-weight: 600;
-            color: #667eea;
+        tbody tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        
+        .ip-puerto {
+            font-weight: bold;
+            color: #333;
             font-family: 'Courier New', monospace;
-        }}
+            font-size: 1.05em;
+        }
         
-        .status-cell {{
-            text-align: center;
-            font-weight: 600;
-        }}
-        
-        .status-green {{
-            background: #d4edda;
-            border: 1px solid #28a745;
+        /* COLORES EXPLÍCITOS v2.1 */
+        .ok {
+            background-color: #d4edda;
             color: #155724;
             padding: 8px 12px;
             border-radius: 6px;
+            font-weight: bold;
+            text-align: center;
+            border: 2px solid #28a745;
+            font-size: 0.9em;
             display: inline-block;
-            min-width: 70px;
-        }}
+            width: 90%;
+        }
         
-        .status-red {{
-            background: #f8d7da;
-            border: 1px solid #dc3545;
+        .vulnerable {
+            background-color: #f8d7da;
             color: #721c24;
             padding: 8px 12px;
             border-radius: 6px;
+            font-weight: bold;
+            text-align: center;
+            border: 2px solid #dc3545;
+            font-size: 0.9em;
             display: inline-block;
-            min-width: 70px;
-        }}
+            width: 90%;
+        }
         
-        .status-gray {{
-            background: #e9ecef;
-            border: 1px solid #adb5bd;
-            color: #495057;
-            padding: 8px 12px;
-            border-radius: 6px;
-            display: inline-block;
-            min-width: 70px;
-        }}
-        
-        .footer {{
-            background: #f9f9f9;
+        .legend {
+            display: flex;
+            gap: 30px;
+            margin: 30px 0;
             padding: 20px;
-            border-top: 2px solid #e0e0e0;
+            background: #f5f5f5;
+            border-radius: 8px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .legend-badge {
+            width: 100px;
+            padding: 10px;
+            border-radius: 6px;
+            font-weight: bold;
+            text-align: center;
+            min-width: 100px;
+            font-size: 0.9em;
+        }
+        
+        .summary {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-size: 1.1em;
+        }
+        
+        .footer {
             text-align: center;
             color: #666;
-            font-size: 12px;
-        }}
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            font-size: 0.9em;
+        }
         
-        .timestamp {{
-            color: #999;
+        .version-badge {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.85em;
             margin-top: 10px;
-        }}
+        }
         
-        @media (max-width: 768px) {{
-            .tables-grid {{
-                grid-template-columns: 1fr;
-            }}
-            
-            .header {{
-                padding: 20px;
-            }}
-            
-            .header h1 {{
-                font-size: 24px;
-            }}
-            
-            .content {{
-                padding: 20px;
-            }}
-        }}
+        @media print {
+            body {
+                background: white;
+            }
+            .container {
+                box-shadow: none;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>🔐 Análisis de Vulnerabilidades SSL/TLS</h1>
-            <p>testssl.sh Report Analyzer v2.2</p>
-            <p>Detección de protocolos inseguros y vulnerabilidades</p>
-            <span class="version">VERSIÓN 2.2 - MEJORADA</span>
-        </div>
+        <h1>🔒 Reporte de Vulnerabilidades SSL/TLS</h1>
+        <p class="subtitle">Análisis automático con testssl.sh
+            <span class="version-badge">v2.1 Final</span>
+        </p>
         
-        <div class="content">
-            <!-- RESUMEN -->
-            <div class="summary">
-                <div class="summary-card">
-                    <h3>Hosts Analizados</h3>
-                    <div class="value">{len(self.results)}</div>
-                </div>
-                <div class="summary-card">
-                    <h3>Vulnerabilidades Detectadas</h3>
-                    <div class="value">{self._count_vulnerabilities()}</div>
-                </div>
-                <div class="summary-card">
-                    <h3>TLS FALLBACK Inseguro</h3>
-                    <div class="value">{self._count_fallback_vulnerable()}</div>
-                </div>
-                <div class="summary-card">
-                    <h3>Servidores Seguros</h3>
-                    <div class="value">{self._count_secure_servers()}</div>
-                </div>
+        <div class="legend">
+            <div class="legend-item">
+                <span class="legend-badge ok">✓ OK</span>
+                <span><strong style="color: green;">VERDE</strong> - Seguro / No vulnerable</span>
             </div>
-            
-            <!-- LEYENDA -->
-            <div class="legend">
-                <h3>📌 Leyenda de Colores</h3>
-                <div class="legend-items">
-                    <div class="legend-item">
-                        <div class="legend-box green">✓</div>
-                        <div class="legend-text">
-                            <strong>VERDE (✓ OK)</strong><br>
-                            Configuración segura - Sin acción requerida
-                        </div>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-box red">❌</div>
-                        <div class="legend-text">
-                            <strong>ROJO (❌ X)</strong><br>
-                            Vulnerable - Requiere atención inmediata
-                        </div>
-                    </div>
-                </div>
+            <div class="legend-item">
+                <span class="legend-badge vulnerable">❌ X</span>
+                <span><strong style="color: red;">ROJO</strong> - Vulnerable / Requiere acción</span>
             </div>
-            
-            {self._generate_tables_html()}
-            
         </div>
+"""
         
+        html += """
+        <h2 class="section-title">📋 Análisis de Protocolos TLS/SSL</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>IP:Puerto</th>
+"""
+        
+        for protocolo in todos_protocolos:
+            html += f"                    <th>{protocolo}</th>\n"
+        
+        html += """                </tr>
+            </thead>
+            <tbody>
+"""
+        
+        datos_ordenados = HTMLReportGenerator._sort_by_ip_port(datos)
+        
+        for escan in datos_ordenados:
+            html += f"""                <tr>
+                    <td class="ip-puerto">{escan.ip}:{escan.puerto}</td>
+"""
+            for protocolo in todos_protocolos:
+                es_vulnerable = escan.protocolos.get(protocolo, False)
+                clase = "vulnerable" if es_vulnerable else "ok"
+                signo = "❌ X" if es_vulnerable else "✓ OK"
+                html += f"                    <td><span class=\"{clase}\">{signo}</span></td>\n"
+            
+            html += "                </tr>\n"
+        
+        html += """            </tbody>
+        </table>
+"""
+        
+        html += """
+        <h2 class="section-title">⚠️ Análisis de Vulnerabilidades Conocidas</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>IP:Puerto</th>
+"""
+        
+        for vuln in todas_vulns:
+            html += f"                    <th>{vuln}</th>\n"
+        
+        html += """                </tr>
+            </thead>
+            <tbody>
+"""
+        
+        for escan in datos_ordenados:
+            html += f"""                <tr>
+                    <td class="ip-puerto">{escan.ip}:{escan.puerto}</td>
+"""
+            for vuln in todas_vulns:
+                es_vulnerable = escan.vulnerabilidades.get(vuln, False)
+                clase = "vulnerable" if es_vulnerable else "ok"
+                signo = "❌ X" if es_vulnerable else "✓ OK"
+                html += f"                    <td><span class=\"{clase}\">{signo}</span></td>\n"
+            
+            html += "                </tr>\n"
+        
+        html += """            </tbody>
+        </table>
+"""
+        
+        total_ips = len(datos)
+        total_vuln = sum(1 for e in datos for v in e.vulnerabilidades.values() if v)
+        total_proto_vuln = sum(1 for e in datos for v in e.protocolos.values() if v)
+        
+        html += f"""
+        <div class="summary">
+            <strong>📊 Resumen del Análisis:</strong><br>
+            Total de hosts analizados: <strong>{total_ips}</strong><br>
+            Vulnerabilidades detectadas: <strong>{total_vuln}</strong><br>
+            Protocolos vulnerables/deprecados: <strong>{total_proto_vuln}</strong>
+        </div>
+"""
+        
+        html += f"""
         <div class="footer">
-            <strong>Reporte Generado:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-            <div class="timestamp">
-                Análisis realizado con testssl.sh Report Analyzer v2.2
-            </div>
+            <p>Reporte generado automáticamente | testssl.sh analysis</p>
+            <p>Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p><strong>Versión:</strong> testssl-analyzer v2.1 Final</p>
+            <p>Lógica Confirmada:</p>
+            <ul style="text-align: left; display: inline-block;">
+                <li>SSLv2, SSLv3, TLSv1, TLSv1.1: ❌ X ROJO si offered / ✓ OK VERDE si not offered</li>
+                <li>TLSv1.2, TLSv1.3: ✓ OK VERDE si offered / ❌ X ROJO si not offered</li>
+            </ul>
         </div>
     </div>
 </body>
-</html>"""
+</html>
+"""
         
-        try:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            print(f"✓ Reporte HTML generado: {output_file}")
-            return True
-        except Exception as e:
-            print(f"Error generando reporte HTML: {e}")
-            return False
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(html)
+        
+        print(f"\n✓ Reporte HTML generado: {output_file}")
     
-    def _count_vulnerabilities(self):
-        """Cuenta el total de vulnerabilidades detectadas"""
-        count = 0
-        for result in self.results:
-            for protocol, data in result['protocols'].items():
-                if data['color'] == 'red':
-                    count += 1
-        return count
-    
-    def _count_fallback_vulnerable(self):
-        """Cuenta servidores con TLS_FALLBACK vulnerable"""
-        count = 0
-        for result in self.results:
-            symbol, color, status = self.evaluate_tls_fallback(result['tls_fallback'])
-            if color == 'red':
-                count += 1
-        return count
-    
-    def _count_secure_servers(self):
-        """Cuenta servidores completamente seguros"""
-        secure = 0
-        for result in self.results:
-            if all(data['color'] != 'red' for data in result['protocols'].values()):
-                symbol, color, _ = self.evaluate_tls_fallback(result['tls_fallback'])
-                if color != 'red':
-                    secure += 1
-        return secure
-    
-    def _generate_tables_html(self):
-        """Genera las tablas HTML divididas en 3 secciones"""
-        if not self.results:
-            return ""
+    @staticmethod
+    def _sort_by_ip_port(datos: List[SecurityScan]) -> List[SecurityScan]:
+        """Ordena los datos por IP y puerto"""
+        def sort_key(escan):
+            try:
+                partes_ip = [int(x) for x in escan.ip.split('.')]
+                puerto = int(escan.puerto)
+                return (partes_ip, puerto)
+            except:
+                return ([], 0)
         
-        html = '<div class="section-title">📊 Análisis de Protocolos</div>'
-        html += '<div class="tables-grid">'
-        
-        # Tabla 1: Protocolos Vulnerables
-        html += self._generate_protocol_table(
-            'Protocolos Vulnerables (SSLv2, SSLv3, TLSv1, TLSv1.1)',
-            ['SSLv2', 'SSLv3', 'TLS 1.0', 'TLS 1.1']
-        )
-        
-        # Tabla 2: Protocolos Seguros
-        html += self._generate_protocol_table(
-            'Protocolos Seguros (TLSv1.2, TLSv1.3)',
-            ['TLS 1.2', 'TLS 1.3']
-        )
-        
-        html += '</div>'  # Cierra tables-grid
-        
-        # Tabla 3: TLS FALLBACK SCSV
-        html += '<div class="section-title">🛡️ Mitigaciones y Protecciones</div>'
-        html += self._generate_tls_fallback_table()
-        
-        return html
-    
-    def _generate_protocol_table(self, title, protocols):
-        """Genera tabla HTML para un grupo de protocolos"""
-        html = f'<div class="table-wrapper"><div class="table-title">{title}</div>'
-        html += '<table><thead><tr><th>IP:PUERTO</th>'
-        
-        for proto in protocols:
-            html += f'<th>{proto}</th>'
-        
-        html += '</tr></thead><tbody>'
-        
-        for result in self.results:
-            html += f'<tr><td class="ip-cell">{escape(result["ip_port"])}</td>'
-            
-            for proto in protocols:
-                if proto in result['protocols']:
-                    data = result['protocols'][proto]
-                    symbol = data['symbol']
-                    color = data['color']
-                    
-                    if color == 'green':
-                        css_class = 'status-green'
-                    elif color == 'red':
-                        css_class = 'status-red'
-                    else:
-                        css_class = 'status-gray'
-                    
-                    html += f'<td class="status-cell"><div class="{css_class}">{symbol}</div></td>'
-                else:
-                    html += '<td class="status-cell"><div class="status-gray">?</div></td>'
-            
-            html += '</tr>'
-        
-        html += '</tbody></table></div>'
-        return html
-    
-    def _generate_tls_fallback_table(self):
-        """Genera tabla HTML para TLS FALLBACK SCSV"""
-        html = '<div class="table-wrapper"><div class="table-title">TLS FALLBACK SCSV Prevention (RFC 7507)</div>'
-        html += '<table><thead><tr><th>IP:PUERTO</th><th>Estado</th><th>Descripción</th></tr></thead><tbody>'
-        
-        for result in self.results:
-            symbol, color, status = self.evaluate_tls_fallback(result['tls_fallback'])
-            
-            if color == 'green':
-                css_class = 'status-green'
-                description = '✓ Protegido contra downgrade attacks'
-            elif color == 'red':
-                css_class = 'status-red'
-                description = '❌ Vulnerable a downgrade attacks'
-            else:
-                css_class = 'status-gray'
-                description = '? Estado desconocido'
-            
-            html += f'<tr>'
-            html += f'<td class="ip-cell">{escape(result["ip_port"])}</td>'
-            html += f'<td class="status-cell"><div class="{css_class}">{symbol}</div></td>'
-            html += f'<td>{description}</td>'
-            html += f'</tr>'
-        
-        html += '</tbody></table></div>'
-        return html
-    
-    def export_csv(self, output_file='resultados_testssl.csv'):
-        """Exporta resultados a CSV"""
-        try:
-            with open(output_file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                
-                protocols = self.vulnerable_protocols + self.secure_protocols
-                header = ['IP:PUERTO', 'TLS_FALLBACK'] + protocols
-                writer.writerow(header)
-                
-                for result in self.results:
-                    row = [result['ip_port']]
-                    
-                    symbol, color, _ = self.evaluate_tls_fallback(result['tls_fallback'])
-                    row.append(symbol)
-                    
-                    for protocol in protocols:
-                        if protocol in result['protocols']:
-                            row.append(result['protocols'][protocol]['symbol'])
-                        else:
-                            row.append('?')
-                    
-                    writer.writerow(row)
-            
-            print(f"✓ Reporte CSV generado: {output_file}")
-            return True
-        except Exception as e:
-            print(f"Error exportando CSV: {e}")
-            return False
-    
-    def export_json(self, output_file='resultados_testssl.json'):
-        """Exporta resultados a JSON"""
-        try:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(self.results, f, indent=2, ensure_ascii=False)
-            print(f"✓ Reporte JSON generado: {output_file}")
-            return True
-        except Exception as e:
-            print(f"Error exportando JSON: {e}")
-            return False
+        return sorted(datos, key=sort_key)
 
+
+class CSVReportGenerator:
+    """Genera reportes en formato CSV"""
+    
+    @staticmethod
+    def generate(datos: List[SecurityScan], output_file: str = "reporte_ssl_vulnerabilidades.csv"):
+        """Genera un reporte CSV"""
+        
+        import csv
+        
+        todos_protocolos = set()
+        todas_vulns = set()
+        
+        for escan in datos:
+            todos_protocolos.update(escan.protocolos.keys())
+            todas_vulns.update(escan.vulnerabilidades.keys())
+        
+        todos_protocolos = sorted(list(todos_protocolos))
+        todas_vulns = sorted(list(todas_vulns))
+        
+        datos_ordenados = HTMLReportGenerator._sort_by_ip_port(datos)
+        
+        with open(output_file, 'w', newline='', encoding='utf-8') as f:
+            campos = ['IP', 'Puerto'] + todos_protocolos + todas_vulns
+            writer = csv.DictWriter(f, fieldnames=campos)
+            
+            writer.writeheader()
+            
+            for escan in datos_ordenados:
+                fila = {
+                    'IP': escan.ip,
+                    'Puerto': escan.puerto
+                }
+                
+                for proto in todos_protocolos:
+                    fila[proto] = 'VULNERABLE' if escan.protocolos.get(proto, False) else 'OK'
+                
+                for vuln in todas_vulns:
+                    fila[vuln] = 'VULNERABLE' if escan.vulnerabilidades.get(vuln, False) else 'OK'
+                
+                writer.writerow(fila)
+        
+        print(f"✓ Reporte CSV generado: {output_file}")
+
+
+class JSONReportGenerator:
+    """Genera reportes en formato JSON"""
+    
+    @staticmethod
+    def generate(datos: List[SecurityScan], output_file: str = "resultados_testssl.json"):
+        """Genera un reporte JSON"""
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump([d.to_dict() for d in datos], f, indent=2, ensure_ascii=False)
+        
+        print(f"✓ Reporte JSON generado: {output_file}")
+
+
+# ============================================================================
+# FUNCIÓN PRINCIPAL
+# ============================================================================
 
 def main():
-    import argparse
+    """Función principal del programa"""
     
     parser = argparse.ArgumentParser(
-        description='testssl.sh HTML Report Analyzer v2.2',
+        description='Analizador avanzado de reportes HTML de testssl.sh v2.1 Final',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
+        epilog="""
 Ejemplos de uso:
-  python3 testssl_v22.py .
-  python3 testssl_v22.py . --csv --json
-  python3 testssl_v22.py /datos -o reporte.html
-  python3 testssl_v22.py . -v
-        '''
+  python3 testssl_analyzer.py .
+  python3 testssl_analyzer.py /path/to/html/files
+  python3 testssl_analyzer.py --output reporte_personalizado.html
+  python3 testssl_analyzer.py . --csv --json -v
+        """
     )
     
-    parser.add_argument('directory', nargs='?', default='.',
-                        help='Directorio con archivos HTML (default: .)')
-    parser.add_argument('-o', '--output', default='reporte_ssl_vulnerabilidades.html',
-                        help='Archivo de salida HTML')
-    parser.add_argument('--csv', action='store_true',
-                        help='Exportar también a CSV')
-    parser.add_argument('--json', action='store_true',
-                        help='Exportar también a JSON')
-    parser.add_argument('-v', '--verbose', action='store_true',
-                        help='Modo verbose (más detalles)')
+    parser.add_argument(
+        'directorio',
+        nargs='?',
+        default='.',
+        help='Directorio con archivos HTML de testssl.sh (default: .)'
+    )
+    parser.add_argument(
+        '-o', '--output',
+        default='reporte_ssl_vulnerabilidades.html',
+        help='Archivo de salida HTML (default: reporte_ssl_vulnerabilidades.html)'
+    )
+    parser.add_argument(
+        '--csv',
+        action='store_true',
+        help='Generar también reporte en CSV'
+    )
+    parser.add_argument(
+        '--json',
+        action='store_true',
+        help='Generar también reporte en JSON'
+    )
+    parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Modo verbose (más detalles)'
+    )
     
     args = parser.parse_args()
     
+    # Banner
     print("""
-╔════════════════════════════════════════════════════════════════╗
-║     testssl.sh HTML Report Analyzer v2.2 - MEJORADO           ║
-║  Detección de protocolos vulnerables y TLS FALLBACK SCSV     ║
-║         Tabla responsive dividida en 3 secciones              ║
-╚════════════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════════════════╗
+║           testssl.sh HTML Report Analyzer v2.1 - Final                    ║
+║         Procesador de vulnerabilidades SSL/TLS con lógica comprobada      ║
+║                   Colores ROJO y VERDE explícitos confirmados            ║
+╚═══════════════════════════════════════════════════════════════════════════╝
     """)
     
-    analyzer = TestSSLAnalyzer()
-    analyzer.analyze_directory(args.directory)
+    # Buscar archivos HTML
+    directorio = Path(args.directorio)
     
-    if analyzer.results:
-        analyzer.generate_html_report(args.output)
-        
-        if args.csv:
-            analyzer.export_csv()
-        
-        if args.json:
-            analyzer.export_json()
-        
-        print("\n" + "="*60)
-        print("RESUMEN DEL ANÁLISIS - v2.2")
-        print("="*60)
-        print(f"Total de hosts analizados: {len(analyzer.results)}")
-        print(f"Total de vulnerabilidades: {analyzer._count_vulnerabilities()}")
-        print(f"TLS FALLBACK inseguro: {analyzer._count_fallback_vulnerable()}")
-        print(f"Servidores seguros: {analyzer._count_secure_servers()}")
-        print("\n✓ Reporte disponible en:", args.output)
-        print("\n" + "="*60)
-    else:
-        print("⚠️  No se encontraron archivos para analizar")
+    if not directorio.exists():
+        print(f"❌ Error: El directorio {directorio} no existe")
         sys.exit(1)
+    
+    archivos_html = list(directorio.glob('*.html'))
+    
+    if not archivos_html:
+        print(f"❌ No se encontraron archivos .html en {directorio}")
+        sys.exit(1)
+    
+    print(f"📂 Directorio: {directorio}")
+    print(f"📄 Archivos encontrados: {len(archivos_html)}\n")
+    
+    # Procesar archivos
+    resultados = []
+    for archivo in sorted(archivos_html):
+        print(f"⏳ Procesando: {archivo.name}...")
+        
+        try:
+            parser = TestSSLParser(str(archivo))
+            resultado = parser.get_result()
+            resultados.append(resultado)
+            
+            vulns = sum(1 for v in resultado.vulnerabilidades.values() if v)
+            proto_vulns = sum(1 for v in resultado.protocolos.values() if v)
+            
+            print(f"  ✓ IP: {resultado.ip}:{resultado.puerto}")
+            
+            if args.verbose:
+                print(f"    - Vulnerabilidades: {vulns}")
+                print(f"    - Protocolos vulnerables: {proto_vulns}")
+        
+        except Exception as e:
+            print(f"  ❌ Error: {str(e)}")
+    
+    if not resultados:
+        print("❌ No se pudieron procesar archivos")
+        sys.exit(1)
+    
+    print(f"\n✓ Se procesaron {len(resultados)} archivo(s)\n")
+    
+    # Generar reportes
+    print("📊 Generando reportes...")
+    HTMLReportGenerator.generate(resultados, args.output)
+    
+    if args.csv:
+        CSVReportGenerator.generate(resultados)
+    
+    if args.json:
+        JSONReportGenerator.generate(resultados)
+    
+    # Resumen final
+    print("\n" + "="*70)
+    print("RESUMEN DEL ANÁLISIS - v2.1 FINAL")
+    print("="*70)
+    
+    total_hosts = len(resultados)
+    total_vulns = sum(1 for r in resultados for v in r.vulnerabilidades.values() if v)
+    total_proto_vulns = sum(1 for r in resultados for v in r.protocolos.values() if v)
+    
+    print(f"\nTotal de hosts analizados: {total_hosts}")
+    print(f"Total de vulnerabilidades: {total_vulns}")
+    print(f"Total de protocolos vulnerables: {total_proto_vulns}")
+    
+    print(f"\n✓ Reporte disponible en: {args.output}")
+    print("""
+LÓGICA APLICADA (v2.1 CONFIRMADA):
+├─ SSLv2: offered → ❌ X ROJO | not offered → ✓ OK VERDE
+├─ SSLv3: offered → ❌ X ROJO | not offered → ✓ OK VERDE
+├─ TLSv1: offered → ❌ X ROJO | not offered → ✓ OK VERDE
+├─ TLSv1.1: offered → ❌ X ROJO | not offered → ✓ OK VERDE
+├─ TLSv1.2: offered → ✓ OK VERDE | not offered → ❌ X ROJO
+└─ TLSv1.3: offered → ✓ OK VERDE | not offered → ❌ X ROJO
+""")
+    print("\n¡Análisis completado exitosamente!\n")
 
 
 if __name__ == '__main__':
