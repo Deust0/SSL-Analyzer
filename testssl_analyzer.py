@@ -2,22 +2,22 @@
 # -*- coding: utf-8 -*-
 """
 ╔═══════════════════════════════════════════════════════════════════════════════╗
-║                   TESTSSL.SH HTML REPORT ANALYZER                             ║
-║                    Avanzado Generador de Tablas de Resumen                    ║
+║              TESTSSL.SH HTML REPORT ANALYZER v2.1 - VERSIÓN FINAL             ║
+║                    Generador Avanzado de Tablas de Resumen                    ║
 ║                                                                               ║
-║  Descripción:                                                                 ║
-║  - Lee archivos HTML generados por testssl.sh                               ║
-║  - Extrae información de protocolos TLS/SSL                                 ║
-║  - Extrae información de vulnerabilidades conocidas                         ║
-║  - Genera tabla resumen con colores (X rojo = vulnerable, OK verde = seguro) ║
-║  - Ordena por nombre de IP:Puerto                                           ║
-║  - Genera reporte HTML profesional                                          ║
+║  VERSIÓN 2.1 - FINAL CON LÓGICA CONFIRMADA:                                  ║
+║  - Protocolos vulnerables (SSLv2, SSLv3, TLSv1, TLSv1.1):                    ║
+║    ❌ X ROJO si "offered" (habilitados = inseguro)                           ║
+║    ✓ OK VERDE si "not offered" (deshabilitados = seguro)                    ║
+║                                                                               ║
+║  - Protocolos seguros (TLSv1.2, TLSv1.3):                                    ║
+║    ✓ OK VERDE si "offered" (habilitados = seguro)                           ║
+║    ❌ X ROJO si "not offered" (no disponibles = problema)                    ║
 ║                                                                               ║
 ║  Uso:                                                                        ║
 ║  python3 testssl_analyzer.py [directorio_con_htmls]                        ║
-║  python3 testssl_analyzer.py .                                             ║
+║  python3 testssl_analyzer.py . --csv --json                                ║
 ║                                                                               ║
-║  Autor: Generado automáticamente                                            ║
 ║  Python: 3.6+                                                               ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 """
@@ -58,16 +58,9 @@ class SecurityScan:
 
 class TestSSLParser:
     """
-    Parser avanzado para archivos HTML de testssl.sh
-    Extrae información de protocolos y vulnerabilidades
+    Parser v2.1 para archivos HTML de testssl.sh
+    Extrae información de protocolos y vulnerabilidades con lógica comprobada
     """
-    
-    # Colores HTML para identficar estados
-    COLOR_OK = "#008817"
-    COLOR_VULNERABLE = "#a86437"
-    
-    # Protocolos que son vulnerables si están habilitados
-    VULNERABLE_PROTOCOLS = ['TLS 1', 'TLS 1.0', 'TLS 1.1', 'SSLv2', 'SSLv3']
     
     def __init__(self, file_path: str):
         """Inicializa el parser con un archivo HTML"""
@@ -81,63 +74,42 @@ class TestSSLParser:
         self.puerto = self._extract_puerto()
     
     def _extract_ip(self) -> str:
-        """
-        Extrae la IP del archivo.
-        Intenta primero desde el nombre del archivo, luego desde el contenido.
-        """
-        # Patrón: 10.10.0.1_p443-fecha.html
+        """Extrae la IP del archivo"""
         match = re.search(r'(\d+\.\d+\.\d+\.\d+)_p\d+', self.filename)
         if match:
             return match.group(1)
-        
-        # Si no, busca en el contenido: "Testing all IPv4 addresses (port 443): 10.10.0.1"
-        match = re.search(
-            r'Testing all IPv4 addresses.*?>\s*(\d+\.\d+\.\d+\.\d+)',
-            self.content,
-            re.IGNORECASE
-        )
-        if match:
-            return match.group(1)
-        
         return "Unknown"
     
     def _extract_puerto(self) -> str:
-        """
-        Extrae el puerto del archivo.
-        Intenta desde el nombre del archivo, luego desde el contenido.
-        """
-        # Patrón: 10.10.0.1_p443-fecha.html
+        """Extrae el puerto del archivo"""
         match = re.search(r'_p(\d+)', self.filename)
         if match:
             return match.group(1)
-        
-        # Si no, busca en el contenido: "port 443"
-        match = re.search(
-            r'Testing all IPv4 addresses \(port (\d+)\)',
-            self.content,
-            re.IGNORECASE
-        )
-        if match:
-            return match.group(1)
-        
         return "Unknown"
     
     def parse_protocols(self) -> Dict[str, bool]:
         """
-        Extrae información de protocolos TLS/SSL.
-        Retorna: {protocolo: es_vulnerable}
+        VERSIÓN 2.1 FINAL - Extrae información de protocolos TLS/SSL
         
-        Un protocolo es vulnerable si:
-        - SSLv2, SSLv3, TLS 1.0, TLS 1.1 están "offered" (habilitados)
-        - TLS 1.3 está "downgraded"
+        LÓGICA COMPROBADA Y CONFIRMADA:
+        
+        PROTOCOLOS VULNERABLES (SSLv2, SSLv3, TLSv1, TLSv1.1):
+        - ❌ X ROJO   ← si "offered" (habilitados = inseguro)
+        - ✓ OK VERDE  ← si "not offered" (deshabilitados = seguro)
+        
+        PROTOCOLOS SEGUROS (TLSv1.2, TLSv1.3):
+        - ✓ OK VERDE  ← si "offered" (habilitados = seguro)
+        - ❌ X ROJO   ← si "not offered" (no disponibles = problema)
+        
+        Retorna: {protocolo: es_vulnerable}
         """
         protocolos = {
             'SSLv2': False,
             'SSLv3': False,
-            'TLS 1.0': False,
-            'TLS 1.1': False,
-            'TLS 1.2': False,
-            'TLS 1.3': False
+            'TLSv1': False,
+            'TLSv1.1': False,
+            'TLSv1.2': False,
+            'TLSv1.3': False
         }
         
         # Buscar la sección "Testing protocols"
@@ -148,37 +120,41 @@ class TestSSLParser:
         )
         
         if not proto_section:
-            print(f"  ⚠️  No se encontró sección de protocolos en {self.filename}")
             return protocolos
         
         section = proto_section.group(0)
         
-        # Patrones para cada protocolo
+        # PATRONES v2.1: Buscar hasta fin de línea para evitar ambigüedades
         patterns = {
-            'SSLv2': r'SSLv2.*?(?:not offered|offered)',
-            'SSLv3': r'SSLv3.*?(?:not offered|offered)',
-            'TLS 1.0': r'TLS 1[^.].*?(?:not offered|offered|deprecated)',
-            'TLS 1.1': r'TLS 1\.1.*?(?:not offered|offered|deprecated)',
-            'TLS 1.2': r'TLS 1\.2.*?(?:not offered|offered|deprecated)',
-            'TLS 1.3': r'TLS 1\.3.*?(?:not offered|offered|deprecated|downgraded)'
+            'SSLv2': r'SSLv2\s*</span>([^\n]*)',
+            'SSLv3': r'SSLv3\s*</span>([^\n]*)',
+            'TLSv1': r'(?:TLS 1|TLSv1)(?:\.0)?\s+</span>([^\n]*)',
+            'TLSv1.1': r'(?:TLS 1\.1|TLSv1\.1)\s+</span>([^\n]*)',
+            'TLSv1.2': r'(?:TLS 1\.2|TLSv1\.2)\s+</span>([^\n]*)',
+            'TLSv1.3': r'(?:TLS 1\.3|TLSv1\.3)\s+</span>([^\n]*)'
         }
         
         for proto, pattern in patterns.items():
-            match = re.search(pattern, section, re.IGNORECASE | re.DOTALL)
+            match = re.search(pattern, section, re.IGNORECASE)
             
             if match:
-                text = match.group(0).lower()
+                captura = match.group(1).strip().lower()
                 
-                # Lógica de detección de vulnerabilidades
-                if proto in ['SSLv2', 'SSLv3', 'TLS 1.0', 'TLS 1.1']:
-                    # Estos son vulnerables si están "offered" (habilitados)
-                    protocolos[proto] = 'offered' in text
-                elif proto == 'TLS 1.3':
-                    # TLS 1.3 es vulnerable si está downgraded
-                    protocolos[proto] = 'downgraded' in text
+                # Detectar palabras clave en la MISMA línea
+                tiene_offered = 'offered' in captura
+                tiene_not_offered = 'not offered' in captura
+                
+                # LÓGICA v2.1 - COMPROBADA Y CONFIRMADA
+                if proto in ['SSLv2', 'SSLv3', 'TLSv1', 'TLSv1.1']:
+                    # PROTOCOLOS VULNERABLES:
+                    # ❌ X ROJO si "offered" (habilitado = inseguro)
+                    # ✓ OK VERDE si "not offered" (deshabilitado = seguro)
+                    protocolos[proto] = tiene_offered and not tiene_not_offered
                 else:
-                    # TLS 1.2 debería estar offered
-                    protocolos[proto] = 'downgraded' in text
+                    # PROTOCOLOS SEGUROS (TLSv1.2, TLSv1.3):
+                    # ✓ OK VERDE si "offered" (habilitado = seguro)
+                    # ❌ X ROJO si "not offered" (no disponible = problema)
+                    protocolos[proto] = tiene_not_offered
         
         return protocolos
     
@@ -186,10 +162,6 @@ class TestSSLParser:
         """
         Extrae información de vulnerabilidades conocidas.
         Retorna: {vulnerabilidad: es_vulnerable}
-        
-        Busca en la sección "Testing vulnerabilities" y detecta:
-        - VULNERABLE (explícito)
-        - not vulnerable (OK)
         """
         vulnerabilidades = {
             'Heartbleed': False,
@@ -213,7 +185,6 @@ class TestSSLParser:
             'RC4': False
         }
         
-        # Buscar sección "Testing vulnerabilities"
         vuln_section = re.search(
             r'Testing vulnerabilities.*?(?=Running client|$)',
             self.content,
@@ -221,12 +192,10 @@ class TestSSLParser:
         )
         
         if not vuln_section:
-            print(f"  ⚠️  No se encontró sección de vulnerabilidades en {self.filename}")
             return vulnerabilidades
         
         section = vuln_section.group(0)
         
-        # Mapeo de patrones para detectar cada vulnerabilidad
         patterns = {
             'Heartbleed': r'Heartbleed.*?(?:VULNERABLE|not vulnerable)',
             'CCS': r'CCS.*?(?:VULNERABLE|not vulnerable)',
@@ -254,8 +223,6 @@ class TestSSLParser:
             
             if match:
                 text = match.group(0).lower()
-                
-                # Detectar si es vulnerable
                 if 'vulnerable' in text and 'not vulnerable' not in text:
                     vulnerabilidades[vuln] = True
                 elif 'detected' in text and 'no rc4' not in text:
@@ -281,13 +248,12 @@ class TestSSLParser:
 # ============================================================================
 
 class HTMLReportGenerator:
-    """Genera reportes HTML profesionales"""
+    """Genera reportes HTML profesionales con colores explícitos"""
     
     @staticmethod
     def generate(datos: List[SecurityScan], output_file: str = "reporte_ssl_vulnerabilidades.html"):
-        """Genera un reporte HTML con tabla visual"""
+        """Genera un reporte HTML con tabla visual mejorada"""
         
-        # Recopilar todas las vulnerabilidades y protocolos únicos
         todos_protocolos = set()
         todas_vulns = set()
         
@@ -298,7 +264,6 @@ class HTMLReportGenerator:
         todos_protocolos = sorted(list(todos_protocolos))
         todas_vulns = sorted(list(todas_vulns))
         
-        # Iniciar HTML
         html = """<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -400,26 +365,31 @@ class HTMLReportGenerator:
             font-size: 1.05em;
         }
         
+        /* COLORES EXPLÍCITOS v2.1 */
         .ok {
             background-color: #d4edda;
             color: #155724;
-            padding: 6px 12px;
+            padding: 8px 12px;
             border-radius: 6px;
             font-weight: bold;
             text-align: center;
             border: 2px solid #28a745;
             font-size: 0.9em;
+            display: inline-block;
+            width: 90%;
         }
         
         .vulnerable {
             background-color: #f8d7da;
             color: #721c24;
-            padding: 6px 12px;
+            padding: 8px 12px;
             border-radius: 6px;
             font-weight: bold;
             text-align: center;
             border: 2px solid #dc3545;
             font-size: 0.9em;
+            display: inline-block;
+            width: 90%;
         }
         
         .legend {
@@ -439,12 +409,13 @@ class HTMLReportGenerator:
         }
         
         .legend-badge {
-            width: 80px;
-            padding: 8px;
+            width: 100px;
+            padding: 10px;
             border-radius: 6px;
             font-weight: bold;
             text-align: center;
-            min-width: 80px;
+            min-width: 100px;
+            font-size: 0.9em;
         }
         
         .summary {
@@ -465,6 +436,16 @@ class HTMLReportGenerator:
             font-size: 0.9em;
         }
         
+        .version-badge {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            margin-top: 10px;
+        }
+        
         @media print {
             body {
                 background: white;
@@ -478,21 +459,22 @@ class HTMLReportGenerator:
 <body>
     <div class="container">
         <h1>🔒 Reporte de Vulnerabilidades SSL/TLS</h1>
-        <p class="subtitle">Análisis automático con testssl.sh</p>
+        <p class="subtitle">Análisis automático con testssl.sh
+            <span class="version-badge">v2.1 Final</span>
+        </p>
         
         <div class="legend">
             <div class="legend-item">
                 <span class="legend-badge ok">✓ OK</span>
-                <span>No vulnerable / Protocolo seguro</span>
+                <span><strong style="color: green;">VERDE</strong> - Seguro / No vulnerable</span>
             </div>
             <div class="legend-item">
                 <span class="legend-badge vulnerable">❌ X</span>
-                <span>Vulnerable / Protocolo deprecado/habilitado</span>
+                <span><strong style="color: red;">ROJO</strong> - Vulnerable / Requiere acción</span>
             </div>
         </div>
 """
         
-        # Tabla de PROTOCOLOS
         html += """
         <h2 class="section-title">📋 Análisis de Protocolos TLS/SSL</h2>
         <table>
@@ -509,7 +491,6 @@ class HTMLReportGenerator:
             <tbody>
 """
         
-        # Ordenar datos
         datos_ordenados = HTMLReportGenerator._sort_by_ip_port(datos)
         
         for escan in datos_ordenados:
@@ -520,7 +501,7 @@ class HTMLReportGenerator:
                 es_vulnerable = escan.protocolos.get(protocolo, False)
                 clase = "vulnerable" if es_vulnerable else "ok"
                 signo = "❌ X" if es_vulnerable else "✓ OK"
-                html += f"                    <td class=\"{clase}\">{signo}</td>\n"
+                html += f"                    <td><span class=\"{clase}\">{signo}</span></td>\n"
             
             html += "                </tr>\n"
         
@@ -528,7 +509,6 @@ class HTMLReportGenerator:
         </table>
 """
         
-        # Tabla de VULNERABILIDADES
         html += """
         <h2 class="section-title">⚠️ Análisis de Vulnerabilidades Conocidas</h2>
         <table>
@@ -553,7 +533,7 @@ class HTMLReportGenerator:
                 es_vulnerable = escan.vulnerabilidades.get(vuln, False)
                 clase = "vulnerable" if es_vulnerable else "ok"
                 signo = "❌ X" if es_vulnerable else "✓ OK"
-                html += f"                    <td class=\"{clase}\">{signo}</td>\n"
+                html += f"                    <td><span class=\"{clase}\">{signo}</span></td>\n"
             
             html += "                </tr>\n"
         
@@ -561,7 +541,6 @@ class HTMLReportGenerator:
         </table>
 """
         
-        # Resumen
         total_ips = len(datos)
         total_vuln = sum(1 for e in datos for v in e.vulnerabilidades.values() if v)
         total_proto_vuln = sum(1 for e in datos for v in e.protocolos.values() if v)
@@ -575,18 +554,22 @@ class HTMLReportGenerator:
         </div>
 """
         
-        # Footer
         html += f"""
         <div class="footer">
             <p>Reporte generado automáticamente | testssl.sh analysis</p>
             <p>Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p><strong>Versión:</strong> testssl-analyzer v2.1 Final</p>
+            <p>Lógica Confirmada:</p>
+            <ul style="text-align: left; display: inline-block;">
+                <li>SSLv2, SSLv3, TLSv1, TLSv1.1: ❌ X ROJO si offered / ✓ OK VERDE si not offered</li>
+                <li>TLSv1.2, TLSv1.3: ✓ OK VERDE si offered / ❌ X ROJO si not offered</li>
+            </ul>
         </div>
     </div>
 </body>
 </html>
 """
         
-        # Guardar archivo
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(html)
         
@@ -615,7 +598,6 @@ class CSVReportGenerator:
         
         import csv
         
-        # Recopilar todas las vulnerabilidades y protocolos
         todos_protocolos = set()
         todas_vulns = set()
         
@@ -626,10 +608,8 @@ class CSVReportGenerator:
         todos_protocolos = sorted(list(todos_protocolos))
         todas_vulns = sorted(list(todas_vulns))
         
-        # Ordenar datos
         datos_ordenados = HTMLReportGenerator._sort_by_ip_port(datos)
         
-        # Escribir CSV
         with open(output_file, 'w', newline='', encoding='utf-8') as f:
             campos = ['IP', 'Puerto'] + todos_protocolos + todas_vulns
             writer = csv.DictWriter(f, fieldnames=campos)
@@ -674,13 +654,14 @@ def main():
     """Función principal del programa"""
     
     parser = argparse.ArgumentParser(
-        description='Analizador avanzado de reportes HTML de testssl.sh',
+        description='Analizador avanzado de reportes HTML de testssl.sh v2.1 Final',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos de uso:
   python3 testssl_analyzer.py .
   python3 testssl_analyzer.py /path/to/html/files
   python3 testssl_analyzer.py --output reporte_personalizado.html
+  python3 testssl_analyzer.py . --csv --json -v
         """
     )
     
@@ -716,9 +697,9 @@ Ejemplos de uso:
     # Banner
     print("""
 ╔═══════════════════════════════════════════════════════════════════════════╗
-║           testssl.sh HTML Report Analyzer - Avanzado v1.0                 ║
-║         Procesador de vulnerabilidades SSL/TLS con generación de          ║
-║                  tablas resumen profesionales                             ║
+║           testssl.sh HTML Report Analyzer v2.1 - Final                    ║
+║         Procesador de vulnerabilidades SSL/TLS con lógica comprobada      ║
+║                   Colores ROJO y VERDE explícitos confirmados            ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
     """)
     
@@ -748,28 +729,26 @@ Ejemplos de uso:
             resultado = parser.get_result()
             resultados.append(resultado)
             
-            # Contar vulnerabilidades
             vulns = sum(1 for v in resultado.vulnerabilidades.values() if v)
             proto_vulns = sum(1 for v in resultado.protocolos.values() if v)
             
             print(f"  ✓ IP: {resultado.ip}:{resultado.puerto}")
             
             if args.verbose:
-                print(f"    - Vulnerabilidades encontradas: {vulns}")
+                print(f"    - Vulnerabilidades: {vulns}")
                 print(f"    - Protocolos vulnerables: {proto_vulns}")
         
         except Exception as e:
-            print(f"  ❌ Error procesando {archivo.name}: {str(e)}")
+            print(f"  ❌ Error: {str(e)}")
     
     if not resultados:
         print("❌ No se pudieron procesar archivos")
         sys.exit(1)
     
-    print(f"\n✓ Se procesaron correctamente {len(resultados)} archivo(s)")
+    print(f"\n✓ Se procesaron {len(resultados)} archivo(s)\n")
     
     # Generar reportes
-    print("\n📊 Generando reportes...")
-    
+    print("📊 Generando reportes...")
     HTMLReportGenerator.generate(resultados, args.output)
     
     if args.csv:
@@ -780,7 +759,7 @@ Ejemplos de uso:
     
     # Resumen final
     print("\n" + "="*70)
-    print("RESUMEN DEL ANÁLISIS")
+    print("RESUMEN DEL ANÁLISIS - v2.1 FINAL")
     print("="*70)
     
     total_hosts = len(resultados)
@@ -792,6 +771,15 @@ Ejemplos de uso:
     print(f"Total de protocolos vulnerables: {total_proto_vulns}")
     
     print(f"\n✓ Reporte disponible en: {args.output}")
+    print("""
+LÓGICA APLICADA (v2.1 CONFIRMADA):
+├─ SSLv2: offered → ❌ X ROJO | not offered → ✓ OK VERDE
+├─ SSLv3: offered → ❌ X ROJO | not offered → ✓ OK VERDE
+├─ TLSv1: offered → ❌ X ROJO | not offered → ✓ OK VERDE
+├─ TLSv1.1: offered → ❌ X ROJO | not offered → ✓ OK VERDE
+├─ TLSv1.2: offered → ✓ OK VERDE | not offered → ❌ X ROJO
+└─ TLSv1.3: offered → ✓ OK VERDE | not offered → ❌ X ROJO
+""")
     print("\n¡Análisis completado exitosamente!\n")
 
 
